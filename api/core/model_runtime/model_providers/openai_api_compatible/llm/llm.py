@@ -74,7 +74,7 @@ class OAIAPICompatLargeLanguageModel(_CommonOAI_API_Compat, LargeLanguageModel):
             tools=tools,
             stop=stop,
             stream=stream,
-            user=user
+            user=user,
         )
 
     def get_num_tokens(self, model: str, credentials: dict, prompt_messages: list[PromptMessage],
@@ -88,7 +88,7 @@ class OAIAPICompatLargeLanguageModel(_CommonOAI_API_Compat, LargeLanguageModel):
         :param tools: tools for tool calling
         :return:
         """
-        return self._num_tokens_from_messages(model, prompt_messages, tools)
+        return self._num_tokens_from_messages(model, prompt_messages, tools, credentials)
 
     def validate_credentials(self, model: str, credentials: dict) -> None:
         """
@@ -138,7 +138,7 @@ class OAIAPICompatLargeLanguageModel(_CommonOAI_API_Compat, LargeLanguageModel):
                 endpoint_url,
                 headers=headers,
                 json=data,
-                timeout=(10, 60)
+                timeout=(10, 300)
             )
 
             if response.status_code != 200:
@@ -154,7 +154,7 @@ class OAIAPICompatLargeLanguageModel(_CommonOAI_API_Compat, LargeLanguageModel):
                 json_result['object'] = 'chat.completion'
             elif (completion_type is LLMMode.COMPLETION and json_result['object'] == ''):
                 json_result['object'] = 'text_completion'
-                
+
             if (completion_type is LLMMode.CHAT
                     and ('object' not in json_result or json_result['object'] != 'chat.completion')):
                 raise CredentialsValidateFailedError(
@@ -280,6 +280,12 @@ class OAIAPICompatLargeLanguageModel(_CommonOAI_API_Compat, LargeLanguageModel):
             'Content-Type': 'application/json',
             'Accept-Charset': 'utf-8',
         }
+        extra_headers = credentials.get('extra_headers')
+        if extra_headers is not None:
+            headers = {
+              **headers,
+              **extra_headers,
+            }
 
         api_key = credentials.get('api_key')
         if api_key:
@@ -299,7 +305,7 @@ class OAIAPICompatLargeLanguageModel(_CommonOAI_API_Compat, LargeLanguageModel):
 
         if completion_type is LLMMode.CHAT:
             endpoint_url = urljoin(endpoint_url, 'chat/completions')
-            data['messages'] = [self._convert_prompt_message_to_dict(m) for m in prompt_messages]
+            data['messages'] = [self._convert_prompt_message_to_dict(m, credentials) for m in prompt_messages]
         elif completion_type is LLMMode.COMPLETION:
             endpoint_url = urljoin(endpoint_url, 'completions')
             data['prompt'] = prompt_messages[0].content
@@ -334,7 +340,7 @@ class OAIAPICompatLargeLanguageModel(_CommonOAI_API_Compat, LargeLanguageModel):
             endpoint_url,
             headers=headers,
             json=data,
-            timeout=(10, 60),
+            timeout=(10, 300),
             stream=stream
         )
 
@@ -425,6 +431,7 @@ class OAIAPICompatLargeLanguageModel(_CommonOAI_API_Compat, LargeLanguageModel):
         finish_reason = 'Unknown'
 
         for chunk in response.iter_lines(decode_unicode=True, delimiter=delimiter):
+            chunk = chunk.strip()
             if chunk:
                 # ignore sse comments
                 if chunk.startswith(':'):
@@ -575,7 +582,7 @@ class OAIAPICompatLargeLanguageModel(_CommonOAI_API_Compat, LargeLanguageModel):
 
         return result
 
-    def _convert_prompt_message_to_dict(self, message: PromptMessage) -> dict:
+    def _convert_prompt_message_to_dict(self, message: PromptMessage, credentials: Optional[dict] = None) -> dict:
         """
         Convert PromptMessage to dict for OpenAI API format
         """
@@ -629,7 +636,7 @@ class OAIAPICompatLargeLanguageModel(_CommonOAI_API_Compat, LargeLanguageModel):
             #     "tool_call_id": message.tool_call_id
             # }
             message_dict = {
-                "role": "function",
+                "role": "tool" if credentials and credentials.get('function_calling_type', 'no_call') == 'tool_call' else "function",
                 "content": message.content,
                 "name": message.tool_call_id
             }
@@ -668,7 +675,7 @@ class OAIAPICompatLargeLanguageModel(_CommonOAI_API_Compat, LargeLanguageModel):
         return num_tokens
 
     def _num_tokens_from_messages(self, model: str, messages: list[PromptMessage],
-                                  tools: Optional[list[PromptMessageTool]] = None) -> int:
+                                  tools: Optional[list[PromptMessageTool]] = None, credentials: dict = None) -> int:
         """
         Approximate num tokens with GPT2 tokenizer.
         """
@@ -677,7 +684,7 @@ class OAIAPICompatLargeLanguageModel(_CommonOAI_API_Compat, LargeLanguageModel):
         tokens_per_name = 1
 
         num_tokens = 0
-        messages_dict = [self._convert_prompt_message_to_dict(m) for m in messages]
+        messages_dict = [self._convert_prompt_message_to_dict(m, credentials) for m in messages]
         for message in messages_dict:
             num_tokens += tokens_per_message
             for key, value in message.items():
